@@ -554,45 +554,54 @@ class MySQLMigrator:
             flags=re.IGNORECASE
         )
         
-        # Step 5: Fix UNIQUE KEY and KEY indexes for varchar fields >= 191
-        # Find all UNIQUE KEY and KEY with varchar(X) where X >= 191
-        # Pattern: UNIQUE KEY `name` (`column`)
-        def fix_key_length(match):
-            key_type = match.group(1)  # UNIQUE KEY or KEY
-            key_name = match.group(2)  # index name
-            column = match.group(3)    # column name
-            
-            # Check if this column is varchar with size >= 191
-            varchar_pattern = rf'`{column}`\s+varchar\((\d+)\)'
-            varchar_match = re.search(varchar_pattern, create_stmt, re.IGNORECASE)
-            
-            if varchar_match:
-                size = int(varchar_match.group(1))
-                if size >= 191:  # 191 * 4 = 764 bytes (safe for utf8mb4)
-                    return f'{key_type} `{key_name}` (`{column}`(191))'
-            
-            return match.group(0)  # Return original if no change needed
-        
-        # Apply fix to UNIQUE KEY
-        create_stmt = re.sub(
-            r'(UNIQUE KEY)\s+`([^`]+)`\s+\(`([^`]+)`\)',
-            fix_key_length,
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        # Apply fix to regular KEY
-        create_stmt = re.sub(
-            r'(KEY)\s+`([^`]+)`\s+\(`([^`]+)`\)',
-            fix_key_length,
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        # Step 6: Clean up extra spaces and commas
+        # Step 5: Clean up extra spaces first
         create_stmt = re.sub(r'\s+', ' ', create_stmt)
         create_stmt = re.sub(r'\s*,\s*,\s*', ', ', create_stmt)
         create_stmt = re.sub(r',\s*\)', ')', create_stmt)
+        
+        # Step 6: Fix index length for varchar columns >= 191
+        # Find all varchar columns and their sizes
+        varchar_columns = {}
+        for match in re.finditer(r'`(\w+)`\s+varchar\((\d+)\)', create_stmt, re.IGNORECASE):
+            column_name = match.group(1)
+            size = int(match.group(2))
+            varchar_columns[column_name] = size
+        
+        print(f"DEBUG - Found varchar columns: {varchar_columns}")
+        
+        # Fix UNIQUE KEY for columns with varchar >= 191
+        def fix_unique_key(match):
+            key_name = match.group(1)
+            column_name = match.group(2)
+            
+            if column_name in varchar_columns and varchar_columns[column_name] >= 191:
+                print(f"DEBUG - Limiting UNIQUE KEY {key_name} on column {column_name} to (191)")
+                return f'UNIQUE KEY `{key_name}` (`{column_name}`(191))'
+            return match.group(0)
+        
+        # Fix regular KEY for columns with varchar >= 191
+        def fix_regular_key(match):
+            key_name = match.group(1)
+            column_name = match.group(2)
+            
+            if column_name in varchar_columns and varchar_columns[column_name] >= 191:
+                print(f"DEBUG - Limiting KEY {key_name} on column {column_name} to (191)")
+                return f'KEY `{key_name}` (`{column_name}`(191))'
+            return match.group(0)
+        
+        # Apply fixes
+        create_stmt = re.sub(
+            r'UNIQUE KEY `([^`]+)` \(`([^`]+)`\)',
+            fix_unique_key,
+            create_stmt,
+            flags=re.IGNORECASE
+        )
+        
+        create_stmt = re.sub(
+            r'(?<!UNIQUE )KEY `([^`]+)` \(`([^`]+)`\)',
+            fix_regular_key,
+            create_stmt
+        )
         
         print(f"DEBUG - FULL Modified CREATE:\n{create_stmt}\n{'='*80}\n")
         
