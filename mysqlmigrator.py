@@ -511,55 +511,40 @@ class MySQLMigrator:
             return 'utf8mb4_unicode_ci'  # Default fallback
     
     def standardize_collation(self, create_stmt: str, target_collation: str) -> str:
-        """Standardize the collation in a CREATE TABLE statement"""
+        """Remove all collation and charset specifications to use database defaults"""
         
-        # Debug: Print original statement (first 500 chars)
-        print(f"DEBUG - Original CREATE (first 500 chars): {create_stmt[:500]}")
+        # Debug: Print FULL original statement
+        print(f"DEBUG - FULL Original CREATE:\n{create_stmt}\n")
         
-        # Step 1: Replace all CHARACTER SET specifications with utf8mb4
+        # Remove all COLLATE specifications
         create_stmt = re.sub(
-            r'CHARACTER\s+SET\s+\w+',
-            'CHARACTER SET utf8mb4',
+            r'\s+COLLATE\s+[\w_]+',
+            '',
             create_stmt,
             flags=re.IGNORECASE
         )
         
-        # Step 2: Replace ALL COLLATE specifications with target collation
-        # This is the key - we need to replace EVERY collation, regardless of context
+        # Remove all CHARACTER SET specifications
         create_stmt = re.sub(
-            r'COLLATE\s+[\w_]+',
-            f'COLLATE {target_collation}',
+            r'\s+CHARACTER\s+SET\s+\w+',
+            '',
             create_stmt,
             flags=re.IGNORECASE
         )
         
-        # Step 3: Replace table-level charset/collation
+        # Remove table-level CHARSET specifications
         create_stmt = re.sub(
-            r'(DEFAULT\s+)?CHARSET\s*=\s*\w+',
-            'CHARSET=utf8mb4',
+            r'\s+(DEFAULT\s+)?CHARSET\s*=\s*\w+',
+            '',
             create_stmt,
             flags=re.IGNORECASE
         )
         
-        # Step 4: If there's an ENGINE clause but no table-level COLLATE, add it
-        if 'ENGINE' in create_stmt.upper():
-            # Check if there's already a table-level COLLATE after the last closing parenthesis
-            parts = create_stmt.rsplit(')', 1)
-            if len(parts) == 2 and 'COLLATE' not in parts[1].upper():
-                # Insert COLLATE before ENGINE or at the end
-                if 'ENGINE' in parts[1].upper():
-                    parts[1] = re.sub(
-                        r'(ENGINE)',
-                        f'COLLATE={target_collation} \\1',
-                        parts[1],
-                        flags=re.IGNORECASE
-                    )
-                else:
-                    parts[1] = f' COLLATE={target_collation}' + parts[1]
-                create_stmt = ')'.join(parts)
+        # Clean up any double spaces left behind
+        create_stmt = re.sub(r'\s+', ' ', create_stmt)
         
-        # Debug: Print modified statement (first 500 chars)
-        print(f"DEBUG - Modified CREATE (first 500 chars): {create_stmt[:500]}")
+        # Debug: Print FULL modified statement
+        print(f"DEBUG - FULL Modified CREATE:\n{create_stmt}\n")
         
         return create_stmt
             
