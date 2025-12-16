@@ -511,97 +511,45 @@ class MySQLMigrator:
             return 'utf8mb4_unicode_ci'  # Default fallback
     
     def standardize_collation(self, create_stmt: str, target_collation: str) -> str:
-        """Remove all collation and charset specifications to use database defaults"""
+        """Remove all collation and charset specifications, fix long indexes"""
         
         print(f"DEBUG - FULL Original CREATE:\n{create_stmt}\n{'='*80}\n")
         
-        # Step 1: Remove all "CHARACTER SET xxx COLLATE yyy" patterns
-        create_stmt = re.sub(
-            r'CHARACTER\s+SET\s+\w+\s+COLLATE\s+[\w_]+',
-            '',
-            create_stmt,
-            flags=re.IGNORECASE
-        )
+        # Remove all CHARACTER SET and COLLATE specifications
+        create_stmt = re.sub(r'CHARACTER\s+SET\s+\w+\s+COLLATE\s+[\w_]+', '', create_stmt, flags=re.IGNORECASE)
+        create_stmt = re.sub(r'COLLATE\s+[\w_]+', '', create_stmt, flags=re.IGNORECASE)
+        create_stmt = re.sub(r'CHARACTER\s+SET\s+\w+', '', create_stmt, flags=re.IGNORECASE)
+        create_stmt = re.sub(r'(DEFAULT\s+)?CHARSET\s*=\s*\w+', '', create_stmt, flags=re.IGNORECASE)
         
-        # Step 2: Remove remaining standalone COLLATE specifications
-        create_stmt = re.sub(
-            r'COLLATE\s+[\w_]+',
-            '',
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        # Step 3: Remove remaining standalone CHARACTER SET specifications
-        create_stmt = re.sub(
-            r'CHARACTER\s+SET\s+\w+',
-            '',
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        # Step 4: Remove table-level CHARSET and COLLATE at the end
-        create_stmt = re.sub(
-            r'(DEFAULT\s+)?CHARSET\s*=\s*\w+',
-            '',
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        create_stmt = re.sub(
-            r'COLLATE\s*=\s*[\w_]+',
-            '',
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        # Step 5: Clean up extra spaces first
+        # Clean up spaces
         create_stmt = re.sub(r'\s+', ' ', create_stmt)
         create_stmt = re.sub(r'\s*,\s*,\s*', ', ', create_stmt)
-        create_stmt = re.sub(r',\s*\)', ')', create_stmt)
         
-        # Step 6: Fix index length for varchar columns >= 191
-        # Find all varchar columns and their sizes
-        varchar_columns = {}
-        for match in re.finditer(r'`(\w+)`\s+varchar\((\d+)\)', create_stmt, re.IGNORECASE):
-            column_name = match.group(1)
-            size = int(match.group(2))
-            varchar_columns[column_name] = size
+        # Find varchar columns with size >= 191
+        varchar_cols = {}
+        for m in re.finditer(r'`(\w+)`\s+varchar\((\d+)\)', create_stmt, re.IGNORECASE):
+            col_name = m.group(1)
+            size = int(m.group(2))
+            if size >= 191:
+                varchar_cols[col_name] = size
         
-        print(f"DEBUG - Found varchar columns: {varchar_columns}")
+        print(f"DEBUG - VARCHAR columns >= 191: {varchar_cols}")
         
-        # Fix UNIQUE KEY for columns with varchar >= 191
-        def fix_unique_key(match):
-            key_name = match.group(1)
-            column_name = match.group(2)
+        # Fix UNIQUE KEY - limit to 191 chars for large varchar columns
+        def fix_key(match):
+            full_match = match.group(0)
+            key_type = match.group(1) if match.lastindex >= 1 else ""
+            key_name = match.group(2) if match.lastindex >= 2 else ""
+            col_name = match.group(3) if match.lastindex >= 3 else ""
             
-            if column_name in varchar_columns and varchar_columns[column_name] >= 191:
-                print(f"DEBUG - Limiting UNIQUE KEY {key_name} on column {column_name} to (191)")
-                return f'UNIQUE KEY `{key_name}` (`{column_name}`(191))'
-            return match.group(0)
+            if col_name in varchar_cols:
+                result = f'{key_type}KEY `{key_name}` (`{col_name}`(191))'
+                print(f"DEBUG - Fixed: {full_match} -> {result}")
+                return result
+            return full_match
         
-        # Fix regular KEY for columns with varchar >= 191
-        def fix_regular_key(match):
-            key_name = match.group(1)
-            column_name = match.group(2)
-            
-            if column_name in varchar_columns and varchar_columns[column_name] >= 191:
-                print(f"DEBUG - Limiting KEY {key_name} on column {column_name} to (191)")
-                return f'KEY `{key_name}` (`{column_name}`(191))'
-            return match.group(0)
-        
-        # Apply fixes
-        create_stmt = re.sub(
-            r'UNIQUE KEY `([^`]+)` \(`([^`]+)`\)',
-            fix_unique_key,
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        create_stmt = re.sub(
-            r'(?<!UNIQUE )KEY `([^`]+)` \(`([^`]+)`\)',
-            fix_regular_key,
-            create_stmt
-        )
+        # Fix both UNIQUE KEY and regular KEY
+        create_stmt = re.sub(r'(UNIQUE\s+)?KEY\s+`([^`]+)`\s+\(`([^`]+)`\)', fix_key, create_stmt, flags=re.IGNORECASE)
         
         print(f"DEBUG - FULL Modified CREATE:\n{create_stmt}\n{'='*80}\n")
         
