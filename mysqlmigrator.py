@@ -511,46 +511,44 @@ class MySQLMigrator:
             return 'utf8mb4_unicode_ci'  # Default fallback
     
     def standardize_collation(self, create_stmt: str, target_collation: str) -> str:
-        """Aggressively standardize and fix collations in CREATE TABLE statement"""
-        
-        # 1. Force default charset to utf8mb4
-        create_stmt = re.sub(r'DEFAULT\s+CHARSET=\w+', 'DEFAULT CHARSET=utf8mb4', create_stmt, flags=re.IGNORECASE)
-        
-        # 2. Force table-level collation
-        create_stmt = re.sub(r'COLLATE\s*[\w_]+', f'COLLATE {target_collation}', create_stmt, flags=re.IGNORECASE)
-        
-        # 3. Fix column-level: any CHARACTER SET ... COLLATE ...
+        """Standardize the collation in a CREATE TABLE statement"""
+        # First, replace any standalone COLLATE clauses (without CHARACTER SET)
+        # This handles cases like: `field` varchar(255) COLLATE latin1_general_ci
         create_stmt = re.sub(
-            r'CHARACTER\s+SET\s+\w+\s+COLLATE\s+[\w_]+',
-            f'CHARACTER SET utf8mb4 COLLATE {target_collation}',
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        # 4. Fix cases where only COLLATE is specified (e.g., COLLATE latin1_general_ci)
-        create_stmt = re.sub(
-            r'\bCOLLATE\s+[\w_]+',
+            r'COLLATE\s+[\w_]+',
             f'COLLATE {target_collation}',
-            create_stmt,
-            flags=re.IGNORECASE
+            create_stmt
         )
         
-        # 5. Remove any remaining references to non-utf8mb4 collations (nuclear option if needed)
-        # This removes any lingering "latin1_general_ci", "latin1_swedish_ci", etc.
-        create_stmt = re.sub(
-            r'\b(latin1|utf8|ucs2|utf16|utf32)[_\w]*ci\b',
-            target_collation,
-            create_stmt,
-            flags=re.IGNORECASE
-        )
-        
-        # 6. Ensure any remaining CHARACTER SET without COLLATE gets utf8mb4 + correct collation
+        # Replace CHARACTER SET specifications
         create_stmt = re.sub(
             r'CHARACTER\s+SET\s+\w+',
-            f'CHARACTER SET utf8mb4 COLLATE {target_collation}',
-            create_stmt,
-            flags=re.IGNORECASE
+            'CHARACTER SET utf8mb4',
+            create_stmt
         )
+        
+        # Replace table-level charset
+        create_stmt = re.sub(
+            r'DEFAULT\s+CHARSET\s*=\s*\w+',
+            'DEFAULT CHARSET=utf8mb4',
+            create_stmt
+        )
+        
+        # Replace ENGINE charset specifications
+        create_stmt = re.sub(
+            r'CHARSET\s*=\s*\w+',
+            'CHARSET=utf8mb4',
+            create_stmt
+        )
+        
+        # Ensure table-level collation is set
+        if 'COLLATE' not in create_stmt.split('ENGINE')[0]:
+            # Add collation at table level if not present
+            create_stmt = re.sub(
+                r'(ENGINE\s*=\s*\w+)',
+                f'COLLATE={target_collation} \\1',
+                create_stmt
+            )
         
         return create_stmt
             
