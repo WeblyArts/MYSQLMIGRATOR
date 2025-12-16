@@ -554,7 +554,42 @@ class MySQLMigrator:
             flags=re.IGNORECASE
         )
         
-        # Step 5: Clean up extra spaces and commas
+        # Step 5: Fix UNIQUE KEY and KEY indexes for varchar fields >= 191
+        # Find all UNIQUE KEY and KEY with varchar(X) where X >= 191
+        # Pattern: UNIQUE KEY `name` (`column`)
+        def fix_key_length(match):
+            key_type = match.group(1)  # UNIQUE KEY or KEY
+            key_name = match.group(2)  # index name
+            column = match.group(3)    # column name
+            
+            # Check if this column is varchar with size >= 191
+            varchar_pattern = rf'`{column}`\s+varchar\((\d+)\)'
+            varchar_match = re.search(varchar_pattern, create_stmt, re.IGNORECASE)
+            
+            if varchar_match:
+                size = int(varchar_match.group(1))
+                if size >= 191:  # 191 * 4 = 764 bytes (safe for utf8mb4)
+                    return f'{key_type} `{key_name}` (`{column}`(191))'
+            
+            return match.group(0)  # Return original if no change needed
+        
+        # Apply fix to UNIQUE KEY
+        create_stmt = re.sub(
+            r'(UNIQUE KEY)\s+`([^`]+)`\s+\(`([^`]+)`\)',
+            fix_key_length,
+            create_stmt,
+            flags=re.IGNORECASE
+        )
+        
+        # Apply fix to regular KEY
+        create_stmt = re.sub(
+            r'(KEY)\s+`([^`]+)`\s+\(`([^`]+)`\)',
+            fix_key_length,
+            create_stmt,
+            flags=re.IGNORECASE
+        )
+        
+        # Step 6: Clean up extra spaces and commas
         create_stmt = re.sub(r'\s+', ' ', create_stmt)
         create_stmt = re.sub(r'\s*,\s*,\s*', ', ', create_stmt)
         create_stmt = re.sub(r',\s*\)', ')', create_stmt)
