@@ -615,10 +615,51 @@ class MySQLMigrator:
         except Exception as e:
             print(f"Error overwriting schema in {dest_config['database']}: {e}")
             return False
+    def remove_foreign_keys(self, create_stmt: str) -> Tuple[str, List[str]]:
+        """Remove foreign keys from CREATE TABLE and return them separately"""
+        foreign_keys = []
+        
+        # Find all CONSTRAINT ... FOREIGN KEY patterns
+        fk_pattern = r',?\s*CONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY\s+\([^)]+\)\s+REFERENCES\s+`[^`]+`\s+\([^)]+\)(?:\s+ON\s+DELETE\s+\w+)?(?:\s+ON\s+UPDATE\s+\w+)?'
+        
+        for match in re.finditer(fk_pattern, create_stmt, re.IGNORECASE):
+            foreign_keys.append(match.group(0).strip().lstrip(',').strip())
+        
+        # Remove foreign keys from statement
+        create_stmt = re.sub(fk_pattern, '', create_stmt, flags=re.IGNORECASE)
+        
+        # Clean up trailing commas before closing parenthesis
+        create_stmt = re.sub(r',\s*\)', ')', create_stmt)
+        
+        return create_stmt, foreign_keys
+
+    def add_foreign_keys_after(self, dest_config: Dict, table_fks: Dict[str, List[str]]) -> bool:
+        """Add foreign keys after all tables are created"""
+        try:
+            dest_conn = self.get_connection(dest_config)
+            dest_cursor = dest_conn.cursor()
+            
+            for table_name, fk_list in table_fks.items():
+                for fk in fk_list:
+                    try:
+                        alter_stmt = f"ALTER TABLE `{table_name}` ADD {fk};"
+                        dest_cursor.execute(alter_stmt)
+                        print(f"Added foreign key to {table_name}")
+                    except Exception as e:
+                        print(f"Warning: Could not add foreign key to {table_name}: {e}")
+            
+            dest_conn.commit()
+            dest_conn.close()
+            return True
+        except Exception as e:
+            print(f"Error adding foreign keys: {e}")
+            return False
     
     def update_schema(self, dest_config: Dict) -> bool:
         """Update the schema in destination database with master schema (add missing fields only)"""
         try:
+            table_fks = {}  # Dictionary to store foreign keys
+            
             master_schema = self.get_table_schema(self.master_config)
             dest_schema = self.get_table_schema(dest_config)
             
@@ -675,18 +716,32 @@ class MySQLMigrator:
                     # Standardize collation
                     create_stmt = self.standardize_collation(create_stmt, dest_collation)
                     
+                    # Remove foreign keys temporarily
+                    create_stmt, fk_list = self.remove_foreign_keys(create_stmt)
+                    if fk_list:
+                        table_fks[table_name] = fk_list
+                    
                     try:
                         dest_cursor.execute(create_stmt)
                         print(f"Created table {table_name} in {dest_config['database']}")
                     except Exception as e:
                         print(f"Error creating table {table_name}: {e}")
                         print("Attempting to create with default utf8mb4_unicode_ci collation...")
-                        create_stmt = self.standardize_collation(create_stmt, 'utf8mb4_unicode_ci')
+                        create_stmt_original = master_schema[f"{table_name}_create"]
+                        create_stmt = self.standardize_collation(create_stmt_original, 'utf8mb4_unicode_ci')
+                        create_stmt, fk_list = self.remove_foreign_keys(create_stmt)
+                        if fk_list:
+                            table_fks[table_name] = fk_list
                         dest_cursor.execute(create_stmt)
                         print(f"Created table {table_name} with utf8mb4_unicode_ci collation")
             
             dest_conn.commit()
             dest_conn.close()
+            
+            # Add foreign keys after all tables are created
+            if table_fks:
+                print("\nAdding foreign keys...")
+                self.add_foreign_keys_after(dest_config, table_fks)
             
             # Migrate indexes, triggers and procedures
             print("\nMigrating indexes...")
