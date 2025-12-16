@@ -513,38 +513,53 @@ class MySQLMigrator:
     def standardize_collation(self, create_stmt: str, target_collation: str) -> str:
         """Remove all collation and charset specifications to use database defaults"""
         
-        # Debug: Print FULL original statement
-        print(f"DEBUG - FULL Original CREATE:\n{create_stmt}\n")
+        print(f"DEBUG - FULL Original CREATE:\n{create_stmt}\n{'='*80}\n")
         
-        # Remove all COLLATE specifications
+        # Step 1: Remove all "CHARACTER SET xxx COLLATE yyy" patterns
         create_stmt = re.sub(
-            r'\s+COLLATE\s+[\w_]+',
+            r'CHARACTER\s+SET\s+\w+\s+COLLATE\s+[\w_]+',
             '',
             create_stmt,
             flags=re.IGNORECASE
         )
         
-        # Remove all CHARACTER SET specifications
+        # Step 2: Remove remaining standalone COLLATE specifications
         create_stmt = re.sub(
-            r'\s+CHARACTER\s+SET\s+\w+',
+            r'COLLATE\s+[\w_]+',
             '',
             create_stmt,
             flags=re.IGNORECASE
         )
         
-        # Remove table-level CHARSET specifications
+        # Step 3: Remove remaining standalone CHARACTER SET specifications
         create_stmt = re.sub(
-            r'\s+(DEFAULT\s+)?CHARSET\s*=\s*\w+',
+            r'CHARACTER\s+SET\s+\w+',
             '',
             create_stmt,
             flags=re.IGNORECASE
         )
         
-        # Clean up any double spaces left behind
+        # Step 4: Remove table-level CHARSET and COLLATE at the end
+        create_stmt = re.sub(
+            r'(DEFAULT\s+)?CHARSET\s*=\s*\w+',
+            '',
+            create_stmt,
+            flags=re.IGNORECASE
+        )
+        
+        create_stmt = re.sub(
+            r'COLLATE\s*=\s*[\w_]+',
+            '',
+            create_stmt,
+            flags=re.IGNORECASE
+        )
+        
+        # Step 5: Clean up extra spaces and commas
         create_stmt = re.sub(r'\s+', ' ', create_stmt)
+        create_stmt = re.sub(r'\s*,\s*,\s*', ', ', create_stmt)
+        create_stmt = re.sub(r',\s*\)', ')', create_stmt)
         
-        # Debug: Print FULL modified statement
-        print(f"DEBUG - FULL Modified CREATE:\n{create_stmt}\n")
+        print(f"DEBUG - FULL Modified CREATE:\n{create_stmt}\n{'='*80}\n")
         
         return create_stmt
             
